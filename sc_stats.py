@@ -42,6 +42,7 @@ from collections import defaultdict, Counter, deque
 from datetime import datetime, timedelta, timezone
 
 import sc_names
+import sc_map   # fork: Starmap section
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -3938,6 +3939,8 @@ def blank_patch():
         "split": Counter(),
         # places visited: name -> [system, kind, sessions, first local date]
         "places": {},
+        # starmap: location code -> [sessions, first local date, last local date]
+        "place_codes": {},
         # out of air: episode seconds, those without a helmet, sessions with one, longest
         "air_eps": [], "air_nohelm": 0, "air_sessions": 0, "air_longest": None,
     }
@@ -4101,6 +4104,13 @@ def fold(agg, s):
     for code in s.get("places") or []:
         name, sysn, kind = place_name(code)
         _pl.setdefault(name, (sysn, kind))      # two codes can share a name
+    for code in set(s.get("places") or []):
+        row = agg["place_codes"].setdefault(code, [0, _d, _d])
+        row[0] += 1
+        if _d and (not row[1] or _d < row[1]):
+            row[1] = _d
+        if _d and (not row[2] or _d > row[2]):
+            row[2] = _d
     for name, (sysn, kind) in _pl.items():
         row = agg["places"].setdefault(name, [sysn, kind, 0, _d])
         row[2] += 1
@@ -4749,6 +4759,7 @@ def finalize(agg):
         "loading": _loading_summary(agg),
         "hours_split": _hours_split(agg),
         "places": _places_summary(agg),
+        "place_codes": {c: r + list(place_name(c)) for c, r in agg["place_codes"].items()} or None,
         "air": _air_summary(agg),
         "gear_lost": _gear_lost_summary(agg),
         "gun_meta": gun_meta,
@@ -5529,6 +5540,10 @@ def render_html(data):
             .replace("<!--__TERMINAL__-->", TERMINAL_HTML)
             .replace("__CSR_VERSION__", CSR_VERSION)
             .replace("__CSR_CONTACT__", CSR_CONTACT)
+            .replace("/*__SCMAP_CSS__*/", sc_map.MAP_CSS)
+            .replace("<!--__SCMAP_NAV__-->", sc_map.MAP_NAV)
+            .replace("/*__SCMAP_ICON__*/", sc_map.MAP_ICON)
+            .replace("/*__SCMAP_JS__*/", "const SCMAP = " + sc_map.map_payload(resource_dir()) + ";\n" + sc_map.MAP_JS)
             .replace("/*__DATA__*/", payload))
 
 
@@ -7295,6 +7310,7 @@ nav a::after{background:var(--menu-bg);border-color:var(--glass-line);box-shadow
 #bpList .tev{display:grid;grid-template-columns:96px minmax(0,1fr) auto;align-items:baseline;column-gap:16px}
 #bpList .tev .tw{min-width:0}
 #bpList .tev .tv{margin-left:0}
+/*__SCMAP_CSS__*/
 </style>
 </head>
 <body>
@@ -7321,6 +7337,7 @@ nav a::after{background:var(--menu-bg);border-color:var(--glass-line);box-shadow
       <a data-sec="system" data-label="Your Machine"><span>🖥️</span> Your Machine</a>
       <a data-sec="stability" data-label="Stability &amp; Crashes"><span>🩺</span> Stability<i class="navlive" id="navLive" title="CSR is watching your logs"></i></a>
       <a data-sec="orgs" data-label="Orgs &amp; Profile"><span>🪪</span> Orgs &amp; Profile</a>
+      <!--__SCMAP_NAV__-->
     </nav>
     <div class="side-foot">
       <button class="foot-link" id="aboutBtn">About &amp; legal</button>
@@ -7553,6 +7570,7 @@ function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':
 const _SVG = inner => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '+
   'stroke-linecap="round" stroke-linejoin="round" class="csr-ic" aria-hidden="true">'+inner+'</svg>';
 const ICON = {
+  /*__SCMAP_ICON__*/
   overview:_SVG('<rect x="3.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.3"/>'),
   flight:_SVG('<path d="M4 14.5l8-7.5 8 7.5"/><path d="M7 20l5-4.5 5 4.5"/>'),
   combat:_SVG('<circle cx="12" cy="12" r="7.5"/><path d="M12 1.8v3.4M12 18.8v3.4M1.8 12h3.4M18.8 12h3.4"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/>'),
@@ -7884,6 +7902,7 @@ function noteFold(line, more){
 function callout(icon, html){ return `<div class="callout"><span class="ci">${icon}</span><div>${html}</div></div>`; }
 
 // ==== SECTION RENDERERS ====
+/*__SCMAP_JS__*/
 const SECTIONS = {
   overview:{title:'Overview', fn:secOverview},
   flight:{title:'Flight & Travel', fn:secFlight},
@@ -7899,6 +7918,7 @@ const SECTIONS = {
   system:{title:'Your Machine', fn:secSystem},
   stability:{title:'Stability & Crashes', fn:secStability},
   orgs:{title:'Orgs & Profile', fn:secOrgs},
+  starmap:{title:'Starmap', fn:secStarmap},
 };
 
 // Compact secondary stat — a horizontal strip rather than another big tile, so the
