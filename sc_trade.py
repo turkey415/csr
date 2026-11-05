@@ -17,7 +17,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
-VERSION = 1   # bump when scan() changes, so archived sessions get re-read
+VERSION = 2   # bump when scan() changes, so archived sessions get re-read
 
 BUY = re.compile(r"SendCommodityBuyRequest> .*?shopName\[([^\]]*)\].*?price\[([\d.]+)\]"
                  r".*?resourceGUID\[([0-9a-f-]+)\].*?quantity\[([\d.]+) cSCU\]")
@@ -27,9 +27,10 @@ LOC_INV = re.compile(r"requested inventory for Location\[([^\]]+)\]")
 QT_PICK = re.compile(r"Player has selected point (\S+) as their destination")
 QT_ARRIVED = "Quantum Drive Arrived - Arrived at Final Destination"
 CARGO_SHIP = re.compile(r"VehicleCargoDataRequest for vehicleEntityId\[(\d+)\]")
+FAILED = re.compile(r"Commodity Transaction Response Error .*?result\[([^\]]*)\] type\[(Buying|Selling)\]")
 TS = re.compile(r"^<(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z>")
 KEYS = ("SendCommodity", "requested inventory for Location", "selected point", QT_ARRIVED,
-        "VehicleCargoDataRequest", "<Join PU>")
+        "VehicleCargoDataRequest", "<Join PU>", "Commodity Transaction Response Error")
 EPS = 1e-9
 
 
@@ -76,6 +77,14 @@ def scan(path):
             where = picked
         elif "<Join PU>" in line:
             picked = where = None
+        elif (x := FAILED.search(line)):
+            # the game refused the last request of that kind (e.g. AutoLoadStartFailed,
+            # CargoRemovalFailed): nothing was bought or sold, so drop it
+            kind = "b" if x.group(2) == "Buying" else "s"
+            for i in range(len(events) - 1, -1, -1):
+                if events[i]["k"] == kind:
+                    del events[i]
+                    break
         elif (x := CARGO_SHIP.search(line)):
             ship_id = x.group(1)
         elif (x := BUY.search(line)):
