@@ -43,6 +43,8 @@ from datetime import datetime, timedelta, timezone
 
 import sc_names
 import sc_map   # fork: Starmap section
+import sc_trade   # fork: Trade runs section
+import sc_rawlogs   # fork: raw log archive
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -551,6 +553,7 @@ def _channel_files(folder):
     """(files, live) for one channel folder (…/LIVE): its logbackups + Game.log."""
     lb = os.path.join(folder, "logbackups")
     files = glob.glob(os.path.join(lb, "*.log")) if os.path.isdir(lb) else []
+    files = sc_rawlogs.merge(folder, files, app_dir())   # fork: keep logs the game prunes
     live = os.path.join(folder, "Game.log")
     return files, (live if os.path.isfile(live) else None)
 
@@ -3869,6 +3872,7 @@ def scan_log(path):
         # they were parsed (see _file_key / scan_channels).
         "_src": os.path.basename(path),
         "_mt": _mtime, "_sz": _size, "_pv": PARSER_VERSION,
+        **sc_trade.session_fields(path),   # fork: trade events + their parser version
     }
 
 
@@ -4243,6 +4247,11 @@ def _perf_summary(perf):
 
 
 CRASH_LOOP_GAP_S = 1800   # same bug again within this long of the last one = a crash loop
+
+
+def _trade_ship(cls):
+    """Ship name for the Trade runs section (fork)."""
+    return SHIPS.display(cls)[0] if SHIPS.ok else cls
 
 
 def _ship_display_name(cls):
@@ -5013,7 +5022,7 @@ def _reuse_map(sessions):
     parsed by the CURRENT parser qualify; older ones are re-read so parser fixes land."""
     out = {}
     for s in sessions:
-        if s.get("_pv") == PARSER_VERSION and s.get("_src"):
+        if s.get("_pv") == PARSER_VERSION and s.get("_tv") == sc_trade.VERSION and s.get("_src"):
             out[_file_key(s["_src"], s.get("_mt"), s.get("_sz"))] = s
     return out
 
@@ -5540,10 +5549,11 @@ def render_html(data):
             .replace("<!--__TERMINAL__-->", TERMINAL_HTML)
             .replace("__CSR_VERSION__", CSR_VERSION)
             .replace("__CSR_CONTACT__", CSR_CONTACT)
-            .replace("/*__SCMAP_CSS__*/", sc_map.MAP_CSS)
-            .replace("<!--__SCMAP_NAV__-->", sc_map.MAP_NAV)
-            .replace("/*__SCMAP_ICON__*/", sc_map.MAP_ICON)
-            .replace("/*__SCMAP_JS__*/", "const SCMAP = " + sc_map.map_payload(resource_dir()) + ";\n" + sc_map.MAP_JS)
+            .replace("/*__SCMAP_CSS__*/", sc_map.MAP_CSS + sc_trade.CSS)
+            .replace("<!--__SCMAP_NAV__-->", sc_map.MAP_NAV + sc_trade.NAV)
+            .replace("/*__SCMAP_ICON__*/", sc_map.MAP_ICON + sc_trade.ICON)
+            .replace("/*__SCMAP_JS__*/", "const SCMAP = " + sc_map.map_payload(resource_dir()) + ";\n" + sc_map.MAP_JS
+                     + sc_trade.JS)
             .replace("/*__DATA__*/", payload))
 
 
@@ -7919,6 +7929,7 @@ const SECTIONS = {
   stability:{title:'Stability & Crashes', fn:secStability},
   orgs:{title:'Orgs & Profile', fn:secOrgs},
   starmap:{title:'Starmap', fn:secStarmap},
+  trade:{title:'Trade Runs', fn:secTrade},
 };
 
 // Compact secondary stat — a horizontal strip rather than another big tile, so the
@@ -10567,6 +10578,7 @@ def generate(out_path, explicit_logs=None, live_path=None, quick=False):
     data = build_from_sessions(sessions, fresh_profile=not quick)
     if not data:
         return None
+    data["trade"] = sc_trade.payload(sessions, place_name, _trade_ship)   # fork: Trade runs
     set_progress(0.96, "embedding hull & armament imagery")
     save_img_cache()
     html_out = render_html(data)
@@ -10846,6 +10858,10 @@ def serve(out_path, port=7878, explicit_logs=None, open_browser=True,
                     "events": watch_events(),
                     "session_live": _WATCH["live"],
                     "watch": watch_status()}))
+            elif p == "/api/trade":   # fork: live Trade runs
+                self._send(200, sc_trade.live_json(load_archive(),
+                                                   resolve_channels(state["live_path"], state["explicit"]) or [],
+                                                   place_name, _trade_ship))
             elif p == "/api/export":
                 # hand over the accumulated archive as a downloadable backup
                 try:
@@ -11118,6 +11134,8 @@ def main():
 
     # The packaged exe launches the app experience by default.
     if args.serve or (is_frozen() and not args.open and not args.out):
+        if args.live:   # fork: --live also picks the folder the app watches
+            save_config({**load_config(), "live_path": args.live})
         serve(out_path, args.port, explicit_logs=args.logs,
               open_browser=not args.no_browser, hide_console=not args.console)
         return
