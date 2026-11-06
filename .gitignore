@@ -72,3 +72,5 @@ desktop.ini
 raw_logs/
 uex_*.json
 uex_*.json.tmp
+csr_trade_lost.json
+csr_trade_lost.json.tmp

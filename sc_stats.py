@@ -10579,6 +10579,7 @@ def generate(out_path, explicit_logs=None, live_path=None, quick=False):
     data = build_from_sessions(sessions, fresh_profile=not quick)
     if not data:
         return None
+    sc_trade.STORE_DIR = app_dir()   # fork: lost-cargo marks
     data["trade"] = sc_trade.payload(sessions, place_name, _trade_ship)   # fork: Trade runs
     set_progress(0.96, "embedding hull & armament imagery")
     save_img_cache()
@@ -10860,6 +10861,7 @@ def serve(out_path, port=7878, explicit_logs=None, open_browser=True,
                     "session_live": _WATCH["live"],
                     "watch": watch_status()}))
             elif p == "/api/trade":   # fork: live Trade runs
+                sc_trade.STORE_DIR = app_dir()
                 self._send(200, sc_trade.live_json(load_archive(),
                                                    resolve_channels(state["live_path"], state["explicit"]) or [],
                                                    place_name, _trade_ship))
@@ -10922,6 +10924,9 @@ def serve(out_path, port=7878, explicit_logs=None, open_browser=True,
                     self._send(200, json.dumps({"ok": False, "cancelled": True}))
                     return
                 self._accept_folder(path)
+            elif p == "/api/trade/lost":   # fork: hold's "Mark as lost" button
+                sc_trade.STORE_DIR = app_dir()
+                self._send(200, json.dumps(sc_trade.mark_lost(self._body())))
             elif p == "/api/set-folder":           # paste-the-path fallback
                 try:
                     path = json.loads(self._body() or "{}").get("path", "")

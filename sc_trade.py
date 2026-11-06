@@ -8,6 +8,7 @@ sc_stats.py calls three things:
   session_fields(path)   per log, stored in the session archive so trades outlive the logs
   payload(sessions, ...) the data embedded in the page
   live_json(...)         /api/trade, which the page polls while the Trade section is open
+  mark_lost(...)         /api/trade/lost, the hold's "Mark as lost" button
 """
 import json
 import os
@@ -18,6 +19,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 VERSION = 2   # bump when scan() changes, so archived sessions get re-read
+STORE_DIR = None   # set by sc_stats (app_dir) so lost-cargo marks live next to the archive
+LOST_FILE = "csr_trade_lost.json"
 
 BUY = re.compile(r"SendCommodityBuyRequest> .*?shopName\[([^\]]*)\].*?price\[([\d.]+)\]"
                  r".*?resourceGUID\[([0-9a-f-]+)\].*?quantity\[([\d.]+) cSCU\]")
@@ -210,6 +213,25 @@ def compute(events, latest_session, place_of, ship_of, now=None):
 
     for ev in events:
         name = commodity(ev["g"])
+        if ev["k"] == "l":
+            # cargo you marked as lost: the rest of that purchase leaves the hold for 0 aUEC
+            q = lots[ev["g"]]
+            lot = next((l for l in q if l["t"] == ev["lot"]), None)
+            if not lot or run is None:
+                continue
+            q.remove(lot)
+            run["end"] = ev["t"]
+            leg = {"t": ev["t"], "day": _local_day(ev["t"]), "sid": ev["sid"], "commodity": name, "scu": lot["scu"],
+                   "unmatched": 0.0, "cost": lot["scu"] * lot["per"], "revenue": 0.0, "free": 0.0,
+                   "profit": -lot["scu"] * lot["per"], "buy_per": lot["per"], "sell_per": 0.0, "from": lot["where"],
+                   "to": "Lost", "ship": None, "lost": True, "lot": lot["t"], "g": ev["g"],
+                   "held_min": (_dt(ev["t"]) - _dt(lot["t"])).total_seconds() / 60}
+            legs.append(leg)
+            run["sells"].append(leg)
+            if held() <= EPS:
+                runs.append(run)
+                run = None
+            continue
         where = place_of(ev.get("w"))
         ship = ship_of(ev["s"]) if ev.get("s") else None
         if run is None:
@@ -222,7 +244,8 @@ def compute(events, latest_session, place_of, ship_of, now=None):
             run["stops"].append(where)
         if ev["k"] == "b":
             per = ev["a"] / ev["q"] if ev["q"] else 0
-            lots[ev["g"]].append({"scu": ev["q"], "per": per, "t": ev["t"], "where": where, "commodity": name})
+            lots[ev["g"]].append({"scu": ev["q"], "per": per, "t": ev["t"], "where": where, "commodity": name,
+                                  "g": ev["g"]})
             run["buys"].append({"t": ev["t"], "commodity": name, "scu": ev["q"], "aUEC": ev["a"], "per": per,
                                 "where": where})
             continue
@@ -354,12 +377,57 @@ def payload(sessions, place_namer, ship_namer, live=()):
             names[code] = place(code, place_namer)
         return names[code]
 
+    for key, marks in load_lost().items():
+        for m in marks:
+            if key in per_acct:
+                per_acct[key][("lost", m["lot"], m["g"])] = {"k": "l", "t": m["t"], "g": m["g"], "lot": m["lot"],
+                                                             "sid": latest.get(key)}
     out = {}
     for key, evs in per_acct.items():
         evs = sorted(evs.values(), key=lambda e: (e["t"], e["k"] != "b"))
         if evs:
             out[key] = compute(evs, latest.get(key), place_of, ship_namer)
     return out
+
+
+# --------------------------------------------------------------------------- #
+#  Lost cargo: marks you add when cargo vanished without a sale in the log
+# --------------------------------------------------------------------------- #
+
+def _lost_path():
+    return os.path.join(STORE_DIR or _resource_dir(), LOST_FILE)
+
+
+def load_lost():
+    """{channel|handle: [{lot: buy time, g: GUID, t: when marked}]}"""
+    try:
+        with open(_lost_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def mark_lost(body):
+    """POST /api/trade/lost {key, lot, g, undo}: add or remove one mark."""
+    try:
+        req = json.loads(body or "{}")
+        key, lot, g = str(req["key"]), str(req["lot"]), str(req["g"])
+    except (ValueError, KeyError, TypeError):
+        return {"ok": False, "error": "bad request"}
+    data = load_lost()
+    marks = [m for m in data.get(key, []) if not (m["lot"] == lot and m["g"] == g)]
+    if not req.get("undo"):
+        marks.append({"lot": lot, "g": g, "t": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")})
+    if marks:
+        data[key] = marks
+    else:
+        data.pop(key, None)
+    tmp = _lost_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, _lost_path())
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------- #
@@ -415,6 +483,9 @@ CSS = r"""
 @keyframes sctp{50%{box-shadow:0 0 2px var(--green)}}
 .sct-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:0 0 14px;color:var(--muted);font-size:13px}
 .sct-pos{color:var(--green)} .sct-neg{color:var(--red)}
+.sct-lost{font:600 11px var(--font-mono);color:var(--muted);background:transparent;border:1px solid var(--line);
+  border-radius:6px;padding:3px 8px;cursor:pointer;white-space:nowrap}
+.sct-lost:hover{color:var(--red);border-color:var(--red)}
 .sct-t{width:100%;border-collapse:collapse;font-size:13px}
 .sct-t th{text-align:left;font:600 10.5px var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
   padding:0 10px 8px;border-bottom:1px solid var(--line)}
@@ -496,7 +567,7 @@ function sctRun(r){
   const stops=r.stops.map(s=>`<span>${sctE(s)}</span>`).join('<em>→</em>');
   const legs=r.sells.map(l=>`<tr><td>${sctE(l.commodity)}<div class="sub">${sctE(l.from)} → ${sctE(l.to)}</div></td>`+
     `<td class="n">${fmt(+l.scu.toFixed(2))}</td><td class="n">${l.buy_per==null?'—':fmt(Math.round(l.buy_per))}</td>`+
-    `<td class="n">${fmt(Math.round(l.sell_per))}</td><td class="n">${sctP(l.profit)}${l.unmatched>1e-6?`<div class="sub">${fmt(+l.unmatched.toFixed(2))} SCU not bought · free cargo</div>`:''}</td></tr>`).join('');
+    `<td class="n">${l.lost?'lost':fmt(Math.round(l.sell_per))}</td><td class="n">${sctP(l.profit)}${l.lost&&/^https?:/.test(location.protocol)?`<div class="sub"><button class="sct-lost" data-undo="1" data-lot="${sctE(l.lot)}" data-g="${sctE(l.g)}">Undo lost</button></div>`:''}${l.unmatched>1e-6?`<div class="sub">${fmt(+l.unmatched.toFixed(2))} SCU not bought · free cargo</div>`:''}</td></tr>`).join('');
   const buys=r.buys.map(b=>`<tr><td>${sctE(b.commodity)}<div class="sub">at ${sctE(b.where)} · ${sctTime(b.t)}</div></td>`+
     `<td class="n">${fmt(+b.scu.toFixed(2))}</td><td class="n">${fmt(Math.round(b.per))}</td><td class="n">${sctA(b.aUEC)}</td></tr>`).join('');
   const key=r.start, open=SCT_OPENED.has(key)?' open':'';
@@ -514,12 +585,23 @@ function sctBadge(){
   const age=SCT_LIVE?SCT_LIVE.game_log_age_s:null, playing=age!=null&&age<120;
   return `<span class="sct-live${playing?' on':''}"><i></i>${playing?'Live · game running':SCT_LIVE?'Live · game not running':'Connecting…'}</span>`;
 }
+function sctLostWire(){
+  $('#content').querySelectorAll('.sct-lost').forEach(b=>b.onclick=ev=>{
+    ev.preventDefault(); ev.stopPropagation();
+    const undo=!!b.dataset.undo;
+    if(!undo && !confirm(`Mark ${b.dataset.what} as lost?\n\nIt leaves your hold and counts as sold for 0 aUEC, so its run closes at a loss. You can undo this from the run.`)) return;
+    b.disabled=true;
+    fetch('/api/trade/lost',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({key:currentChannel+'|'+currentAccount, lot:b.dataset.lot, g:b.dataset.g, undo})})
+      .then(r=>r.json()).then(()=>{ SCT_LIVE=null; SCT_LAST=''; sctPoll(); }).catch(()=>{ b.disabled=false; });
+  });
+}
 function secTrade(){
   const d=sctData(), served=/^https?:/.test(location.protocol), badge=sctBadge(), g=served?1:0;   // g: the terminal card takes section 01
   if(!d){
     $('#content').innerHTML=`<div class="sct-head">${badge}</div>`+trmCard()+group(1+g,'cargo','Trade runs','Buy cargo, sell it somewhere else, see what you made',
       `<div class="empty">No commodity trades found for ${sctE(currentAccount||'this account')} yet. Buy cargo at a trade terminal and it shows up here${served?' while you play':' after a refresh'}.</div>`);
-    trmWire(); sctPoll(); return;
+    trmWire(); sctLostWire(); sctPoll(); return;
   }
   const T=d.totals, S=T.session, D=T.today, AL=T.all;
   const K=kpiRow([
@@ -529,8 +611,8 @@ function secTrade(){
     d.hold.length ? [icon('cargo'), fmt(+d.hold_scu.toFixed(1)), 'SCU in your hold', `${sctA(d.hold_cost)} paid, not sold yet`]
                   : [icon('cargo'), '0', 'SCU in your hold', 'hold is empty', 'na'],
   ]);
-  const hold=d.hold.length?`<table class="sct-t"><thead><tr><th>Commodity</th><th>Bought at</th><th class="n">SCU</th><th class="n">Paid/SCU</th><th class="n">Paid</th><th class="n">Held</th>${served?'<th>Best place to sell</th>':''}</tr></thead><tbody>`+
-    d.hold.map(l=>`<tr><td>${sctE(l.commodity)}</td><td>${sctE(l.where)}</td><td class="n">${fmt(+l.scu.toFixed(2))}</td><td class="n">${fmt(Math.round(l.per))}</td><td class="n">${sctA(l.cost)}</td><td class="n">${sctMin(l.age_min)}</td>${served?`<td>${trmHold(l.commodity,l.scu,l.per)}</td>`:''}</tr>`).join('')+`</tbody></table>`
+  const hold=d.hold.length?`<table class="sct-t"><thead><tr><th>Commodity</th><th>Bought at</th><th class="n">SCU</th><th class="n">Paid/SCU</th><th class="n">Paid</th><th class="n">Held</th>${served?'<th>Best place to sell</th><th></th>':''}</tr></thead><tbody>`+
+    d.hold.map(l=>`<tr><td>${sctE(l.commodity)}</td><td>${sctE(l.where)}</td><td class="n">${fmt(+l.scu.toFixed(2))}</td><td class="n">${fmt(Math.round(l.per))}</td><td class="n">${sctA(l.cost)}</td><td class="n">${sctMin(l.age_min)}</td>${served?`<td>${trmHold(l.commodity,l.scu,l.per)}</td><td class="n"><button class="sct-lost" data-lot="${sctE(l.t)}" data-g="${sctE(l.g)}" data-what="${sctE(fmt(+l.scu.toFixed(2))+' SCU '+l.commodity)}" title="The cargo is gone but the log never showed it leaving (ship lost, a game bug). Counts it as sold for 0.">Mark as lost</button></td>`:''}</tr>`).join('')+`</tbody></table>`
     :'<div class="empty">Nothing in the hold. Everything you bought has been sold.</div>';
   const routes=d.routes.length?`<table class="sct-t"><thead><tr><th>Route</th><th class="n">Sales</th><th class="n">Profit</th><th class="n">Per SCU</th><th class="n">Margin</th></tr></thead><tbody>`+
     d.routes.slice(0,12).map(r=>`<tr><td>${sctE(r.commodity)}<div class="sub">${sctE(r.from)} → ${sctE(r.to)}${r.avg_min!=null?' · '+sctMin(r.avg_min)+' held':''}</div></td><td class="n">${r.legs}</td><td class="n">${sctP(r.profit)}</td><td class="n">${r.per_scu==null?'—':sctA(r.per_scu)}</td><td class="n">${sctPct(r.margin)}</td></tr>`).join('')+`</tbody></table>`
@@ -553,6 +635,6 @@ function secTrade(){
     disp:sctA(c.profit)+' · '+fmt(Math.round(c.scu))+' SCU', sub:`${c.legs} sale${c.legs===1?'':'s'} · ${sctPct(c.margin)} margin`})));
   $('#content').querySelectorAll('.sct-run').forEach(el=>el.addEventListener('toggle',()=>{
     el.open?SCT_OPENED.add(el.dataset.run):SCT_OPENED.delete(el.dataset.run); }));
-  trmWire(); sctPoll();
+  trmWire(); sctLostWire(); sctPoll();
 }
 """
