@@ -467,6 +467,7 @@ function sctPoll(){
   clearTimeout(SCT_TIMER);
   SCT_TIMER=setTimeout(()=>{
     if(section!=='trade') return;
+    trmPoll();   // terminal advice (sc_market)
     fetch('/api/trade',{cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject()).then(j=>{
       const str=JSON.stringify(j.trade), changed=str!==SCT_LAST;
       SCT_LIVE=j; SCT_LAST=str;
@@ -514,11 +515,11 @@ function sctBadge(){
   return `<span class="sct-live${playing?' on':''}"><i></i>${playing?'Live · game running':SCT_LIVE?'Live · game not running':'Connecting…'}</span>`;
 }
 function secTrade(){
-  const d=sctData(), served=/^https?:/.test(location.protocol), badge=sctBadge();
+  const d=sctData(), served=/^https?:/.test(location.protocol), badge=sctBadge(), g=served?1:0;   // g: the terminal card takes section 01
   if(!d){
-    $('#content').innerHTML=`<div class="sct-head">${badge}</div>`+group(1,'cargo','Trade runs','Buy cargo, sell it somewhere else, see what you made',
+    $('#content').innerHTML=`<div class="sct-head">${badge}</div>`+trmCard()+group(1+g,'cargo','Trade runs','Buy cargo, sell it somewhere else, see what you made',
       `<div class="empty">No commodity trades found for ${sctE(currentAccount||'this account')} yet. Buy cargo at a trade terminal and it shows up here${served?' while you play':' after a refresh'}.</div>`);
-    sctPoll(); return;
+    trmWire(); sctPoll(); return;
   }
   const T=d.totals, S=T.session, D=T.today, AL=T.all;
   const K=kpiRow([
@@ -528,21 +529,21 @@ function secTrade(){
     d.hold.length ? [icon('cargo'), fmt(+d.hold_scu.toFixed(1)), 'SCU in your hold', `${sctA(d.hold_cost)} paid, not sold yet`]
                   : [icon('cargo'), '0', 'SCU in your hold', 'hold is empty', 'na'],
   ]);
-  const hold=d.hold.length?`<table class="sct-t"><thead><tr><th>Commodity</th><th>Bought at</th><th class="n">SCU</th><th class="n">Paid/SCU</th><th class="n">Paid</th><th class="n">Held</th></tr></thead><tbody>`+
-    d.hold.map(l=>`<tr><td>${sctE(l.commodity)}</td><td>${sctE(l.where)}</td><td class="n">${fmt(+l.scu.toFixed(2))}</td><td class="n">${fmt(Math.round(l.per))}</td><td class="n">${sctA(l.cost)}</td><td class="n">${sctMin(l.age_min)}</td></tr>`).join('')+`</tbody></table>`
+  const hold=d.hold.length?`<table class="sct-t"><thead><tr><th>Commodity</th><th>Bought at</th><th class="n">SCU</th><th class="n">Paid/SCU</th><th class="n">Paid</th><th class="n">Held</th>${served?'<th>Best place to sell</th>':''}</tr></thead><tbody>`+
+    d.hold.map(l=>`<tr><td>${sctE(l.commodity)}</td><td>${sctE(l.where)}</td><td class="n">${fmt(+l.scu.toFixed(2))}</td><td class="n">${fmt(Math.round(l.per))}</td><td class="n">${sctA(l.cost)}</td><td class="n">${sctMin(l.age_min)}</td>${served?`<td>${trmHold(l.commodity,l.scu,l.per)}</td>`:''}</tr>`).join('')+`</tbody></table>`
     :'<div class="empty">Nothing in the hold. Everything you bought has been sold.</div>';
   const routes=d.routes.length?`<table class="sct-t"><thead><tr><th>Route</th><th class="n">Sales</th><th class="n">Profit</th><th class="n">Per SCU</th><th class="n">Margin</th></tr></thead><tbody>`+
     d.routes.slice(0,12).map(r=>`<tr><td>${sctE(r.commodity)}<div class="sub">${sctE(r.from)} → ${sctE(r.to)}${r.avg_min!=null?' · '+sctMin(r.avg_min)+' held':''}</div></td><td class="n">${r.legs}</td><td class="n">${sctP(r.profit)}</td><td class="n">${r.per_scu==null?'—':sctA(r.per_scu)}</td><td class="n">${sctPct(r.margin)}</td></tr>`).join('')+`</tbody></table>`
     :'<div class="empty">No sales yet.</div>';
   const last=d.last_trade?`last trade ${sctAgo(d.last_trade)}`:'';
-  $('#content').innerHTML=`<div class="sct-head">${badge}<span>${sctE(currentAccount||'')} · ${AL.legs} sales · ${last}</span></div>`+K+
-    group(1,'cargo','In your hold','Bought and not sold yet'+(served?' · updates while you play':''), `<div class="card">${hold}</div>`)+
-    group(2,'trade','Trade runs','A run starts with a purchase and ends when the hold is empty again · newest first',
+  $('#content').innerHTML=`<div class="sct-head">${badge}<span>${sctE(currentAccount||'')} · ${AL.legs} sales · ${last}</span></div>`+trmCard()+K+
+    group(1+g,'cargo','In your hold','Bought and not sold yet'+(served?' · updates while you play':''), `<div class="card">${hold}</div>`)+
+    group(2+g,'trade','Trade runs','A run starts with a purchase and ends when the hold is empty again · newest first',
       `<div class="sct-runs">${d.runs.slice(0,30).map(sctRun).join('')}</div>`)+
-    group(3,'space','Routes &amp; commodities','Where you bought, where you sold, and what paid',
+    group(3+g,'space','Routes &amp; commodities','Where you bought, where you sold, and what paid',
       `<div class="grid2"><div class="card"><h3>Best routes <span class="u">— by profit</span></h3>${routes}</div>`+
       barsCard('Profit by commodity','aUEC','sctComm')+`</div>`)+
-    group(4,'time','Profit over time','Running total, one point per sale', `<div class="card">${sctChart(d.cumulative)}</div>`)+
+    group(4+g,'time','Profit over time','Running total, one point per sale', `<div class="card">${sctChart(d.cumulative)}</div>`)+
     noteFold(`Profit is worked out from your log: each sale is matched to the purchases it came from, oldest first.`,
       `The game logs every commodity buy and sell with its price, but not your wallet, fees or losses, so these are trade margins rather than bank balance. `+
       `A run ends when everything you bought has been sold. `+
@@ -552,6 +553,6 @@ function secTrade(){
     disp:sctA(c.profit)+' · '+fmt(Math.round(c.scu))+' SCU', sub:`${c.legs} sale${c.legs===1?'':'s'} · ${sctPct(c.margin)} margin`})));
   $('#content').querySelectorAll('.sct-run').forEach(el=>el.addEventListener('toggle',()=>{
     el.open?SCT_OPENED.add(el.dataset.run):SCT_OPENED.delete(el.dataset.run); }));
-  sctPoll();
+  trmWire(); sctPoll();
 }
 """
