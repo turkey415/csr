@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 import sc_names
 import sc_map   # fork: Starmap section
 import sc_trade   # fork: Trade runs section
+import sc_market  # fork: terminal trade advice (UEX prices)
 import sc_rawlogs   # fork: raw log archive
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -5549,11 +5550,11 @@ def render_html(data):
             .replace("<!--__TERMINAL__-->", TERMINAL_HTML)
             .replace("__CSR_VERSION__", CSR_VERSION)
             .replace("__CSR_CONTACT__", CSR_CONTACT)
-            .replace("/*__SCMAP_CSS__*/", sc_map.MAP_CSS + sc_trade.CSS)
+            .replace("/*__SCMAP_CSS__*/", sc_map.MAP_CSS + sc_trade.CSS + sc_market.CSS)
             .replace("<!--__SCMAP_NAV__-->", sc_map.MAP_NAV + sc_trade.NAV)
             .replace("/*__SCMAP_ICON__*/", sc_map.MAP_ICON + sc_trade.ICON)
             .replace("/*__SCMAP_JS__*/", "const SCMAP = " + sc_map.map_payload(resource_dir()) + ";\n" + sc_map.MAP_JS
-                     + sc_trade.JS)
+                     + sc_trade.JS + sc_market.JS)
             .replace("/*__DATA__*/", payload))
 
 
@@ -10862,6 +10863,10 @@ def serve(out_path, port=7878, explicit_logs=None, open_browser=True,
                 self._send(200, sc_trade.live_json(load_archive(),
                                                    resolve_channels(state["live_path"], state["explicit"]) or [],
                                                    place_name, _trade_ship))
+            elif p == "/api/market":   # fork: terminal trade advice
+                self._send(200, sc_market.live_json(resolve_channels(state["live_path"], state["explicit"]) or [],
+                                                    place_name, app_dir(),
+                                                    self.path.partition("?")[2]))
             elif p == "/api/export":
                 # hand over the accumulated archive as a downloadable backup
                 try:
