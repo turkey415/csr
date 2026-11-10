@@ -19,6 +19,9 @@ and artwork** so names and images look right:
   **public** RSI Citizen profile & organizations page (the same info anyone can
   see by visiting your public profile).
 - **api.star-citizen.wiki** / **starcitizen.tools** — item names and weapon images.
+- **api.uexcorp.space** (this fork only) — public, player-reported commodity prices for
+  the Trade Runs page, downloaded at most every 15 minutes while it is open. Nothing
+  about you is sent.
 - **fonts.googleapis.com / fonts.gstatic.com** — the display fonts (fetched once,
   then cached locally; the generated page embeds them and needs no further access).
 

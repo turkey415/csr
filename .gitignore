@@ -70,3 +70,7 @@ desktop.ini
 
 # fork: raw copies of your session logs (sc_rawlogs.py)
 raw_logs/
+uex_*.json
+uex_*.json.tmp
+csr_trade_lost.json
+csr_trade_lost.json.tmp
