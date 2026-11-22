@@ -362,9 +362,14 @@ def payload(sessions, place_namer, ship_namer, live=()):
     """{channel|handle: trade state} for every account with trades. `live` adds
     (channel, handle, first, events) for a log that isn't in the archive yet."""
     per_acct, latest = defaultdict(dict), {}
-    rows = [(_account_key(s), _session_start(s), s.get("trade") or []) for s in sessions if s.get("handle")]
-    rows += [(f"{ch}|{h}", first, ev) for ch, h, first, ev in live]
-    for key, sid, evs in rows:
+    # A fresh read of a log replaces the archive's copy of that session rather than
+    # adding to it: the archived copy may be partial, and a later failure line can
+    # cancel a trade that the partial copy still has.
+    rows = {(_account_key(s), _session_start(s) or id(s)): s.get("trade") or []
+            for s in sessions if s.get("handle")}
+    rows.update({(f"{ch}|{h}", first): ev for ch, h, first, ev in live})
+    for (key, sid), evs in rows.items():
+        sid = sid if isinstance(sid, str) else None
         if sid and sid > latest.get(key, ""):
             latest[key] = sid
         for e in evs:
@@ -434,8 +439,13 @@ def mark_lost(body):
 #  /api/trade
 # --------------------------------------------------------------------------- #
 
-def live_json(sessions, channels, place_namer, ship_namer):
-    """Fresh trade state: the archive plus a re-read of each channel's live Game.log."""
+def live_json(sessions, channels, place_namer, ship_namer, since=None):
+    """Fresh trade state: the archive plus a re-read of each channel's live Game.log.
+
+    `since` is when the archive was last saved (epoch seconds). Backup logs written
+    after that are re-read too: a game restart moves Game.log into logbackups, and
+    the archive's copy of that session can be partial (saved while it was live) or
+    missing, so without this every trade from it drops out until a full refresh."""
     live = []
     by_start = {(s.get("channel"), _session_start(s)): s.get("handle") for s in sessions}
     newest = {}
@@ -445,16 +455,25 @@ def live_json(sessions, channels, place_namer, ship_namer):
             newest[ch] = (st, s.get("handle"))
     age = None
     for ch in channels:
-        label, live_path = ch[0], ch[2]
+        label, files, live_path = ch[0], ch[1] or [], ch[2]
+        fresh = []
+        if since is not None:
+            for p in files:
+                try:
+                    if os.stat(p).st_mtime > since:
+                        fresh.append(p)
+                except OSError:
+                    pass
+        for p in fresh + ([live_path] if live_path else []):
+            first, events = scan(p)
+            if not first:
+                continue
+            # a session CSR hasn't refreshed yet belongs to whoever played last on this channel
+            handle = by_start.get((label, first)) or newest.get(label, ("", None))[1]
+            if handle:
+                live.append((label, handle, first, events))
         if not live_path:
             continue
-        first, events = scan(live_path)
-        if not first:
-            continue
-        # a session CSR hasn't refreshed yet belongs to whoever played last on this channel
-        handle = by_start.get((label, first)) or newest.get(label, ("", None))[1]
-        if handle:
-            live.append((label, handle, first, events))
         try:
             a = time.time() - os.stat(live_path).st_mtime
             age = a if age is None else min(age, a)
