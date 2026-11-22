@@ -10862,9 +10862,13 @@ def serve(out_path, port=7878, explicit_logs=None, open_browser=True,
                     "watch": watch_status()}))
             elif p == "/api/trade":   # fork: live Trade runs
                 sc_trade.STORE_DIR = app_dir()
+                try:
+                    since = os.path.getmtime(archive_path())
+                except OSError:
+                    since = 0   # no archive yet: every backup log counts as new
                 self._send(200, sc_trade.live_json(load_archive(),
                                                    resolve_channels(state["live_path"], state["explicit"]) or [],
-                                                   place_name, _trade_ship))
+                                                   place_name, _trade_ship, since=since))
             elif p == "/api/market":   # fork: terminal trade advice
                 self._send(200, sc_market.live_json(resolve_channels(state["live_path"], state["explicit"]) or [],
                                                     place_name, app_dir(),
